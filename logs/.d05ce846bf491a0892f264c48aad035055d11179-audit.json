@@ -1,0 +1,15 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "C:\\Users\\HP\\Desktop\\health-friend prog\\healthfriendbackend\\logs\\.d05ce846bf491a0892f264c48aad035055d11179-audit.json",
+    "files": [
+        {
+            "date": 1757224633756,
+            "name": "C:\\Users\\HP\\Desktop\\health-friend prog\\healthfriendbackend\\logs\\app-2025-09-07.log",
+            "hash": "d75b4e89e1a5aea1e8290b06db092ed9e5c9c3b286433bd1a7b1817d81e61304"
+        }
+    ],
+    "hashType": "sha256"
+}

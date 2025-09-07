@@ -2,34 +2,62 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
 const mongoSanitize = require('express-mongo-sanitize');
 const compression = require('compression');
 const http = require('http');
 const socketIo = require('socket.io');
 const morgan = require('morgan');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
-// Import utilities
-const logger = require('./src/utils/logger');
-const connectDB = require('./src/config/database');
+// Simple logger fallback
+const logger = {
+  info: (message) => console.log(`ℹ️  ${new Date().toISOString()} - ${message}`),
+  error: (message) => console.error(`❌ ${new Date().toISOString()} - ${message}`),
+  warn: (message) => console.warn(`⚠️  ${new Date().toISOString()} - ${message}`)
+};
 
-// Import middleware
-const errorHandler = require('./src/middleware/errorHandler');
-const notFound = require('./src/middleware/notFound');
+// Database connection function
+const connectDB = async () => {
+  try {
+    const conn = await mongoose.connect(process.env.MONGODB_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    logger.info(`MongoDB Connected: ${conn.connection.host}`);
+  } catch (error) {
+    logger.error(`Database connection error: ${error.message}`);
+    process.exit(1);
+  }
+};
 
-// Import routes
-const authRoutes = require('./src/routes/auth');
-const userRoutes = require('./src/routes/users');
-const consultationRoutes = require('./src/routes/consultations');
-const doctorRoutes = require('./src/routes/doctors');
-const paymentRoutes = require('./src/routes/payments');
-const adminRoutes = require('./src/routes/admin');
-const aiRoutes = require('./src/routes/ai');
+// Simple error handler middleware
+const errorHandler = (err, req, res, next) => {
+  logger.error(err.stack);
+  
+  const error = {
+    message: err.message || 'Internal Server Error',
+    status: err.statusCode || 500
+  };
+  
+  if (process.env.NODE_ENV === 'development') {
+    error.stack = err.stack;
+  }
+  
+  res.status(error.status).json({ error });
+};
 
-// Import socket handlers
-const setupVideoCall = require('./src/sockets/videoCall');
-const setupNotifications = require('./src/sockets/notifications');
+// Simple 404 handler
+const notFound = (req, res) => {
+  res.status(404).json({
+    error: 'Route not found',
+    message: `Cannot ${req.method} ${req.originalUrl}`
+  });
+};
+
+// Simple rate limiting
+const { globalLimiter } = require('./src/middleware/rateLimit');
 
 // Initialize Express app
 const app = express();
@@ -109,22 +137,27 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 // Rate limiting
-const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100,
-  message: {
-    error: 'Too many requests from this IP, please try again later.',
-    retryAfter: Math.ceil((parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000) / 1000)
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
+app.use('/api/', globalLimiter);
+
+// Simple socket setup (replace with actual socket handlers later)
+io.on('connection', (socket) => {
+  logger.info(`User connected: ${socket.id}`);
+  
+  socket.on('disconnect', () => {
+    logger.info(`User disconnected: ${socket.id}`);
+  });
+  
+  // Video call events
+  socket.on('join-room', (roomId) => {
+    socket.join(roomId);
+    socket.broadcast.to(roomId).emit('user-connected', socket.id);
+  });
+  
+  socket.on('leave-room', (roomId) => {
+    socket.leave(roomId);
+    socket.broadcast.to(roomId).emit('user-disconnected', socket.id);
+  });
 });
-
-app.use('/api/', limiter);
-
-// Socket.io setup
-setupVideoCall(io);
-setupNotifications(io);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -140,14 +173,38 @@ app.get('/health', (req, res) => {
   res.status(200).json(healthCheck);
 });
 
-// API Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/consultations', consultationRoutes);
-app.use('/api/doctors', doctorRoutes);
-app.use('/api/payments', paymentRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/ai', aiRoutes);
+// Helper function to safely require route files
+const safeRequire = (filePath) => {
+  try {
+    if (fs.existsSync(filePath)) {
+      return require(filePath);
+    } else {
+      logger.warn(`Route file not found: ${filePath}`);
+      return null;
+    }
+  } catch (error) {
+    logger.error(`Error loading route: ${filePath} - ${error.message}`);
+    return null;
+  }
+};
+
+// Conditionally load API Routes (only if files exist)
+const authRoutes = safeRequire('./src/routes/auth');
+const userRoutes = safeRequire('./src/routes/users');
+const consultationRoutes = safeRequire('./src/routes/consultations');
+const doctorRoutes = safeRequire('./src/routes/doctors');
+const paymentRoutes = safeRequire('./src/routes/payments');
+const adminRoutes = safeRequire('./src/routes/admin');
+const aiRoutes = safeRequire('./src/routes/ai');
+
+// Use routes only if they exist
+if (authRoutes) app.use('/api/auth', authRoutes);
+if (userRoutes) app.use('/api/users', userRoutes);
+if (consultationRoutes) app.use('/api/consultations', consultationRoutes);
+if (doctorRoutes) app.use('/api/doctors', doctorRoutes);
+if (paymentRoutes) app.use('/api/payments', paymentRoutes);
+if (adminRoutes) app.use('/api/admin', adminRoutes);
+if (aiRoutes) app.use('/api/ai', aiRoutes);
 
 // Static file serving
 app.use('/uploads', express.static('uploads'));
@@ -158,7 +215,31 @@ app.get('/', (req, res) => {
     message: 'HealthFriend API Server',
     version: '1.0.0',
     status: 'Running',
-    documentation: `${process.env.API_BASE_URL}/docs`
+    environment: process.env.NODE_ENV || 'development',
+    endpoints: {
+      health: '/health',
+      api: '/api',
+      uploads: '/uploads'
+    },
+    loadedRoutes: {
+      auth: !!authRoutes,
+      users: !!userRoutes,
+      consultations: !!consultationRoutes,
+      doctors: !!doctorRoutes,
+      payments: !!paymentRoutes,
+      admin: !!adminRoutes,
+      ai: !!aiRoutes
+    }
+  });
+});
+
+// API status route
+app.get('/api', (req, res) => {
+  res.json({
+    message: 'HealthFriend API',
+    version: '1.0.0',
+    status: 'Ready',
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -204,6 +285,8 @@ server.listen(PORT, () => {
   logger.info(`HealthFriend API server running on port ${PORT}`);
   logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🚀 HealthFriend API server running on port ${PORT}`);
+  console.log(`🌐 Health check: http://localhost:${PORT}/health`);
+  console.log(`📡 API Base: http://localhost:${PORT}/api`);
 });
 
 module.exports = { app, server, io };
