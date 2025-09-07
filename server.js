@@ -17,7 +17,6 @@ const connectDB = require('./src/config/database');
 // Import middleware
 const errorHandler = require('./src/middleware/errorHandler');
 const notFound = require('./src/middleware/notFound');
-const aiRoutes = require('./src/routes/ai');
 
 // Import routes
 const authRoutes = require('./src/routes/auth');
