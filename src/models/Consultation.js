@@ -12,13 +12,27 @@ const consultationSchema = new mongoose.Schema({
   // Consultation Type & Status
   type: { 
     type: String, 
-    enum: ['ai_chat', 'video_call', 'home_visit'], 
+    enum: ['ai_consultation', 'doctor_consultation', 'video_call', 'home_visit'], 
     required: true,
     index: true
   },
   status: { 
     type: String, 
-    enum: ['pending', 'scheduled', 'ongoing', 'completed', 'cancelled', 'failed', 'no_show'], 
+    enum: [
+      'pending', 
+      'pending_payment',
+      'pending_doctor_approval',
+      'confirmed',
+      'scheduled', 
+      'in_progress',
+      'ongoing', 
+      'completed', 
+      'cancelled', 
+      'failed', 
+      'no_show',
+      'emergency_detected',
+      'timed_out'
+    ], 
     default: 'pending',
     index: true
   },
@@ -52,17 +66,17 @@ const consultationSchema = new mongoose.Schema({
     min: 0,
     max: 480 // max 8 hours
   }, // in minutes
-  urgencyLevel: {
+  urgency: {
     type: String,
-    enum: ['low', 'medium', 'high', 'emergency'],
-    default: 'medium'
+    enum: ['low', 'normal', 'medium', 'high', 'critical', 'emergency'],
+    default: 'normal'
   },
   
   // AI Consultation Specific
   aiConversation: [{
     role: { 
       type: String, 
-      enum: ['user', 'assistant'],
+      enum: ['user', 'assistant', 'system'],
       required: true
     },
     message: {
@@ -82,9 +96,39 @@ const consultationSchema = new mongoose.Schema({
     messageId: {
       type: String,
       default: () => Math.random().toString(36).substr(2, 9)
+    },
+    metadata: {
+      responseType: String,
+      requiresFollowUp: Boolean
     }
   }],
-  aiDiagnosis: {
+  
+  // Updated AI Analysis structure to match controllers
+  aiAnalysis: {
+    initialAnalysis: String,
+    currentAssessment: String,
+    finalSummary: String,
+    riskLevel: { 
+      type: String, 
+      enum: ['low', 'medium', 'high', 'critical'],
+      default: 'low'
+    },
+    recommendedActions: [String],
+    suggestedSpecialization: String,
+    confidenceScore: {
+      type: Number,
+      min: 0,
+      max: 1
+    },
+    requiresDoctorConsultation: {
+      type: Boolean,
+      default: false
+    },
+    followUpRequired: {
+      type: Boolean,
+      default: false
+    },
+    emergencyScore: Number,
     conditions: [{
       condition: String,
       probability: {
@@ -96,25 +140,34 @@ const consultationSchema = new mongoose.Schema({
         type: String,
         enum: ['mild', 'moderate', 'severe']
       }
-    }],
-    recommendations: [{
+    }]
+  },
+  
+  // Conversation History (for AI consultations)
+  conversationHistory: [{
+    role: {
       type: String,
-      maxlength: 300
-    }],
-    riskLevel: { 
-      type: String, 
-      enum: ['low', 'medium', 'high', 'critical'],
-      default: 'low'
+      enum: ['user', 'assistant', 'system'],
+      required: true
     },
-    requiresDoctorConsultation: {
-      type: Boolean,
-      default: false
+    content: {
+      type: String,
+      required: true
     },
-    confidence: {
-      type: Number,
-      min: 0,
-      max: 1
-    }
+    timestamp: {
+      type: Date,
+      default: Date.now
+    },
+    attachments: [String],
+    metadata: mongoose.Schema.Types.Mixed
+  }],
+  
+  // Doctor Response (for doctor consultations)
+  doctorResponse: {
+    approved: Boolean,
+    message: String,
+    respondedAt: Date,
+    scheduledDateTime: Date
   },
   
   // Video Call Specific
@@ -205,7 +258,7 @@ const consultationSchema = new mongoose.Schema({
       maxlength: 200
     }
   },
-  scheduledDate: {
+  scheduledDateTime: {
     type: Date,
     index: true
   },
@@ -215,8 +268,8 @@ const consultationSchema = new mongoose.Schema({
   visitDuration: Number, // in minutes
   travelDistance: Number, // in kilometers
   
-  // Medical Assessment
-  vitals: {
+  // Medical Assessment & Vital Signs
+  vitalSigns: {
     bloodPressure: {
       systolic: {
         type: Number,
@@ -359,18 +412,20 @@ const consultationSchema = new mongoose.Schema({
   
   // Additional Notes & Instructions
   notes: {
-    doctorNotes: {
-      type: String,
-      maxlength: 2000
-    },
-    patientNotes: {
-      type: String,
-      maxlength: 1000
-    },
-    adminNotes: {
-      type: String,
-      maxlength: 1000
-    }
+    type: String,
+    maxlength: 2000
+  },
+  doctorNotes: {
+    type: String,
+    maxlength: 2000
+  },
+  patientNotes: {
+    type: String,
+    maxlength: 1000
+  },
+  adminNotes: {
+    type: String,
+    maxlength: 1000
   },
   
   // Files & Documents
@@ -409,51 +464,21 @@ const consultationSchema = new mongoose.Schema({
     }
   }],
   
-  // Payment Information
+  // Payment Information (reference to Payment model)
   payment: {
-    amount: {
-      type: Number,
-      required: true,
-      min: 0
-    },
-    currency: { 
-      type: String, 
-      default: 'USD',
-      enum: ['USD', 'NGN', 'EUR', 'GBP']
-    },
-    transactionHash: {
-      type: String,
-      sparse: true,
-      index: true
-    },
-    paymentMethod: {
-      type: String,
-      enum: ['crypto', 'card', 'bank_transfer', 'cash'],
-      default: 'crypto'
-    },
-    paymentStatus: { 
-      type: String, 
-      enum: ['pending', 'processing', 'completed', 'failed', 'refunded', 'disputed'], 
-      default: 'pending',
-      index: true
-    },
-    paidAt: Date,
-    platformFee: {
-      type: Number,
-      min: 0
-    },
-    doctorEarnings: {
-      type: Number,
-      min: 0
-    },
-    paymentId: String,
-    refundReason: String,
-    refundedAt: Date
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Payment'
+  },
+  paymentStatus: {
+    type: String,
+    enum: ['pending', 'processing', 'paid', 'completed', 'failed', 'refunded', 'disputed'],
+    default: 'pending',
+    index: true
   },
   
   // Rating & Feedback
-  patientRating: {
-    rating: { 
+  rating: {
+    score: { 
       type: Number, 
       min: 1, 
       max: 5 
@@ -486,6 +511,8 @@ const consultationSchema = new mongoose.Schema({
       }
     }
   },
+  
+  // Doctor rating of patient
   doctorRating: {
     rating: { 
       type: Number, 
@@ -536,14 +563,7 @@ const consultationSchema = new mongoose.Schema({
     notes: String
   }],
   
-  // Timestamps
-  bookedAt: {
-    type: Date,
-    default: Date.now
-  },
-  startedAt: Date,
-  endedAt: Date,
-  cancelledAt: Date,
+  // Cancellation & Reason
   cancellationReason: {
     type: String,
     maxlength: 500
@@ -552,6 +572,19 @@ const consultationSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
+  
+  // Session metadata for AI consultations
+  metadata: {
+    userAge: Number,
+    userGender: String,
+    medicalHistory: [String],
+    sessionStart: Date,
+    sessionEnd: Date,
+    totalMessages: Number,
+    emergencyDetected: Boolean
+  },
+  
+  // Timestamps
   createdAt: { 
     type: Date, 
     default: Date.now 
@@ -559,7 +592,14 @@ const consultationSchema = new mongoose.Schema({
   updatedAt: { 
     type: Date, 
     default: Date.now 
-  }
+  },
+  bookedAt: {
+    type: Date,
+    default: Date.now
+  },
+  startedAt: Date,
+  endedAt: Date,
+  cancelledAt: Date
 }, {
   timestamps: true,
   toJSON: { virtuals: true },
@@ -576,7 +616,7 @@ consultationSchema.virtual('totalDuration').get(function() {
 
 // Virtual for consultation cost breakdown
 consultationSchema.virtual('costBreakdown').get(function() {
-  if (!this.payment.amount) return null;
+  if (!this.payment || !this.payment.amount) return null;
   
   const platformFeePercentage = 0.05; // 5%
   const platformFee = this.payment.platformFee || (this.payment.amount * platformFeePercentage);
@@ -611,16 +651,15 @@ consultationSchema.index({ patient: 1, createdAt: -1 });
 consultationSchema.index({ doctor: 1, createdAt: -1 });
 consultationSchema.index({ status: 1 });
 consultationSchema.index({ type: 1 });
-consultationSchema.index({ scheduledDate: 1 });
+consultationSchema.index({ scheduledDateTime: 1 });
 consultationSchema.index({ consultationId: 1 });
-consultationSchema.index({ 'payment.paymentStatus': 1 });
-consultationSchema.index({ 'payment.transactionHash': 1 });
-consultationSchema.index({ urgencyLevel: 1 });
+consultationSchema.index({ paymentStatus: 1 });
+consultationSchema.index({ urgency: 1 });
 consultationSchema.index({ meetingId: 1 });
 
 // Compound indexes
 consultationSchema.index({ patient: 1, status: 1, createdAt: -1 });
-consultationSchema.index({ doctor: 1, status: 1, scheduledDate: 1 });
+consultationSchema.index({ doctor: 1, status: 1, scheduledDateTime: 1 });
 consultationSchema.index({ type: 1, status: 1 });
 
 // Text search index
@@ -628,7 +667,8 @@ consultationSchema.index({
   chiefComplaint: 'text',
   symptoms: 'text',
   'diagnosis.primary.condition': 'text',
-  'notes.doctorNotes': 'text'
+  notes: 'text',
+  doctorNotes: 'text'
 });
 
 // Pre-save middleware
@@ -636,9 +676,9 @@ consultationSchema.pre('save', function(next) {
   this.updatedAt = new Date();
   
   // Calculate BMI if height and weight are available
-  if (this.vitals && this.vitals.height && this.vitals.weight) {
-    const heightInMeters = this.vitals.height / 100;
-    this.vitals.bmi = (this.vitals.weight / (heightInMeters * heightInMeters)).toFixed(1);
+  if (this.vitalSigns && this.vitalSigns.height && this.vitalSigns.weight) {
+    const heightInMeters = this.vitalSigns.height / 100;
+    this.vitalSigns.bmi = (this.vitalSigns.weight / (heightInMeters * heightInMeters)).toFixed(1);
   }
   
   // Set endedAt when status changes to completed
@@ -646,8 +686,8 @@ consultationSchema.pre('save', function(next) {
     this.endedAt = new Date();
   }
   
-  // Set startedAt when status changes to ongoing
-  if (this.isModified('status') && this.status === 'ongoing' && !this.startedAt) {
+  // Set startedAt when status changes to in_progress
+  if (this.isModified('status') && this.status === 'in_progress' && !this.startedAt) {
     this.startedAt = new Date();
   }
   
@@ -670,10 +710,10 @@ consultationSchema.methods.addChatMessage = function(senderId, message, messageT
   return this.save();
 };
 
-consultationSchema.methods.addAIMessage = function(role, message, confidence = null) {
-  this.aiConversation.push({
+consultationSchema.methods.addAIMessage = function(role, content, confidence = null) {
+  this.conversationHistory.push({
     role,
-    message,
+    content,
     confidence,
     timestamp: new Date()
   });
@@ -705,39 +745,25 @@ consultationSchema.methods.addAttachment = function(fileName, filePath, fileType
   return this.save();
 };
 
-consultationSchema.methods.updatePaymentStatus = function(status, transactionHash = null) {
-  this.payment.paymentStatus = status;
-  if (transactionHash) {
-    this.payment.transactionHash = transactionHash;
-  }
-  if (status === 'completed') {
-    this.payment.paidAt = new Date();
+consultationSchema.methods.updatePaymentStatus = function(status) {
+  this.paymentStatus = status;
+  if (status === 'paid') {
+    this.status = 'confirmed';
   }
   return this.save();
 };
 
-consultationSchema.methods.calculateEarnings = function() {
-  const platformFeePercentage = 0.05; // 5%
-  const platformFee = this.payment.amount * platformFeePercentage;
-  const doctorEarnings = this.payment.amount - platformFee;
-  
-  this.payment.platformFee = platformFee;
-  this.payment.doctorEarnings = doctorEarnings;
-  
-  return { platformFee, doctorEarnings };
-};
-
 // Static methods
 consultationSchema.statics.findByConsultationId = function(consultationId) {
-  return this.findOne({ consultationId }).populate('patient doctor');
+  return this.findOne({ consultationId }).populate('patient doctor payment');
 };
 
 consultationSchema.statics.findUpcomingConsultations = function(doctorId) {
   return this.find({
     doctor: doctorId,
-    status: { $in: ['scheduled', 'pending'] },
-    scheduledDate: { $gte: new Date() }
-  }).populate('patient').sort({ scheduledDate: 1 });
+    status: { $in: ['confirmed', 'scheduled'] },
+    scheduledDateTime: { $gte: new Date() }
+  }).populate('patient').sort({ scheduledDateTime: 1 });
 };
 
 consultationSchema.statics.findPatientHistory = function(patientId, limit = 10) {

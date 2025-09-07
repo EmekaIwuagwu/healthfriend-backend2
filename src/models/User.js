@@ -189,26 +189,26 @@ const userSchema = new mongoose.Schema({
       type: String,
       trim: true,
       enum: [
-        'General Practice',
-        'Internal Medicine',
-        'Pediatrics',
-        'Cardiology',
-        'Dermatology',
-        'Endocrinology',
-        'Gastroenterology',
-        'Neurology',
-        'Orthopedics',
-        'Psychiatry',
-        'Radiology',
-        'Surgery',
-        'Gynecology',
-        'Ophthalmology',
-        'ENT',
-        'Urology',
-        'Oncology',
-        'Emergency Medicine',
-        'Family Medicine',
-        'Anesthesiology'
+        'general_medicine',
+        'internal_medicine', 
+        'pediatrics',
+        'cardiology',
+        'dermatology',
+        'endocrinology',
+        'gastroenterology',
+        'neurology',
+        'orthopedics',
+        'psychiatry',
+        'radiology',
+        'surgery',
+        'gynecology',
+        'ophthalmology',
+        'ent',
+        'urology',
+        'oncology',
+        'emergency_medicine',
+        'family_medicine',
+        'anesthesiology'
       ]
     }],
     licenseNumber: {
@@ -255,6 +255,11 @@ const userSchema = new mongoose.Schema({
     },
     isVerified: { type: Boolean, default: false },
     verificationDate: Date,
+    verificationStatus: {
+      type: String,
+      enum: ['pending', 'verified', 'rejected', 'suspended'],
+      default: 'pending'
+    },
     verificationDocuments: [{
       fileName: String,
       filePath: String,
@@ -316,6 +321,14 @@ const userSchema = new mongoose.Schema({
     totalEarnings: { type: Number, default: 0, min: 0 },
     pendingPayments: { type: Number, default: 0, min: 0 },
     
+    // Stats for dashboard
+    stats: {
+      totalConsultations: { type: Number, default: 0 },
+      totalPatients: { type: Number, default: 0 },
+      averageRating: { type: Number, default: 0 },
+      totalEarnings: { type: Number, default: 0 }
+    },
+    
     // Additional Info
     about: { type: String, maxlength: 1000 },
     servicesOffered: [{
@@ -328,6 +341,11 @@ const userSchema = new mongoose.Schema({
   
   // Account Status
   isActive: { type: Boolean, default: true },
+  accountStatus: {
+    type: String,
+    enum: ['active', 'suspended', 'deleted'],
+    default: 'active'
+  },
   isEmailVerified: { type: Boolean, default: false },
   emailVerificationToken: String,
   emailVerificationExpires: Date,
@@ -336,6 +354,9 @@ const userSchema = new mongoose.Schema({
   banDate: Date,
   lastLogin: Date,
   loginCount: { type: Number, default: 0 },
+  
+  // Profile completion status
+  profileComplete: { type: Boolean, default: false },
   
   // Password reset (backup authentication)
   passwordResetToken: String,
@@ -382,6 +403,11 @@ userSchema.virtual('fullName').get(function() {
   return `${this.firstName} ${this.lastName}`;
 });
 
+// Virtual for name (alias for fullName)
+userSchema.virtual('name').get(function() {
+  return `${this.firstName} ${this.lastName}`;
+});
+
 // Virtual for age
 userSchema.virtual('age').get(function() {
   if (!this.dateOfBirth) return null;
@@ -409,9 +435,11 @@ userSchema.index({ email: 1 });
 userSchema.index({ role: 1 });
 userSchema.index({ 'doctorProfile.specialization': 1 });
 userSchema.index({ 'doctorProfile.isVerified': 1 });
+userSchema.index({ 'doctorProfile.verificationStatus': 1 });
 userSchema.index({ 'doctorProfile.isAvailable': 1 });
 userSchema.index({ 'doctorProfile.rating': -1 });
 userSchema.index({ isActive: 1 });
+userSchema.index({ accountStatus: 1 });
 userSchema.index({ createdAt: -1 });
 
 // Text search index
@@ -446,6 +474,9 @@ userSchema.pre('save', function(next) {
     }
   }
   
+  // Update profile completion status
+  this.checkProfileCompletion();
+  
   next();
 });
 
@@ -459,6 +490,27 @@ userSchema.methods.updateLoginInfo = function() {
   this.lastLogin = new Date();
   this.loginCount += 1;
   return this.save();
+};
+
+userSchema.methods.checkProfileCompletion = function() {
+  if (this.role === 'doctor') {
+    this.profileComplete = !!(
+      this.firstName &&
+      this.lastName &&
+      this.email &&
+      this.doctorProfile.specialization &&
+      this.doctorProfile.specialization.length > 0 &&
+      this.doctorProfile.licenseNumber &&
+      this.doctorProfile.education &&
+      this.doctorProfile.education.length > 0
+    );
+  } else {
+    this.profileComplete = !!(
+      this.firstName &&
+      this.lastName &&
+      this.email
+    );
+  }
 };
 
 userSchema.methods.addMedicalHistory = function(condition, diagnosedDate, doctor, notes) {
@@ -491,6 +543,9 @@ userSchema.methods.updateDoctorRating = function(newRating) {
   this.doctorProfile.totalReviews += 1;
   this.doctorProfile.rating = (currentTotal + newRating) / this.doctorProfile.totalReviews;
   
+  // Update stats
+  this.doctorProfile.stats.averageRating = this.doctorProfile.rating;
+  
   return this.save();
 };
 
@@ -503,7 +558,8 @@ userSchema.statics.findDoctorsBySpecialization = function(specialization) {
   return this.find({
     role: 'doctor',
     'doctorProfile.specialization': { $in: [specialization] },
-    'doctorProfile.isVerified': true,
+    'doctorProfile.verificationStatus': 'verified',
+    accountStatus: 'active',
     isActive: true
   }).sort({ 'doctorProfile.rating': -1 });
 };
@@ -511,8 +567,9 @@ userSchema.statics.findDoctorsBySpecialization = function(specialization) {
 userSchema.statics.findAvailableDoctors = function() {
   return this.find({
     role: 'doctor',
-    'doctorProfile.isVerified': true,
+    'doctorProfile.verificationStatus': 'verified',
     'doctorProfile.isAvailable': true,
+    accountStatus: 'active',
     isActive: true
   }).sort({ 'doctorProfile.rating': -1 });
 };
